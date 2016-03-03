@@ -293,6 +293,23 @@ func (j *Journal) GetRealtimeUsec() (uint64, error) {
 	return uint64(usec), nil
 }
 
+// GetCursor gets the cursor of the current journal entry.
+func (j *Journal) GetCursor() (string, error) {
+	var d *C.char
+
+	j.mu.Lock()
+	r := C.sd_journal_get_cursor(j.cjournal, &d)
+	j.mu.Unlock()
+
+	if r < 0 {
+		return "", fmt.Errorf("failed to get cursor: %d", r)
+	}
+
+	cursor := C.GoString(d)
+
+	return cursor, nil
+}
+
 // SeekTail may be used to seek to the end of the journal, i.e. the most recent
 // available entry.
 func (j *Journal) SeekTail() error {
@@ -316,6 +333,22 @@ func (j *Journal) SeekRealtimeUsec(usec uint64) error {
 
 	if r < 0 {
 		return fmt.Errorf("failed to seek to %d: %d", usec, r)
+	}
+
+	return nil
+}
+
+// SeekCursor seeks to a concrete journal cursor.
+func (j *Journal) SeekCursor(cursor string) error {
+	c := C.CString(cursor)
+	defer C.free(unsafe.Pointer(c))
+
+	j.mu.Lock()
+	r := C.sd_journal_seek_cursor(j.cjournal, c)
+	j.mu.Unlock()
+
+	if r < 0 {
+		return fmt.Errorf("failed to seek to cursor %q: %d", cursor, r)
 	}
 
 	return nil
