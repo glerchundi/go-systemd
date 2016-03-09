@@ -27,6 +27,7 @@ package sdjournal
 /*
 #cgo pkg-config: libsystemd
 #include <systemd/sd-journal.h>
+#include <systemd/sd-id128.h>
 #include <stdlib.h>
 #include <syslog.h>
 */
@@ -66,6 +67,15 @@ const (
 	// https://github.com/golang/go/blob/e4dcf5c8c22d98ac9eac7b9b226596229624cb1d/src/time/time.go#L434
 	IndefiniteWait time.Duration = 1<<63 - 1
 )
+
+// JournalEntry represents a complete entry of a journal.
+type JournalEntry struct {
+   Cursor string
+   RealtimeTimestamp uint64
+   MonotonicTimestamp uint64
+
+   Fields map[string]string
+}
 
 // Journal is a Go wrapper of an sd_journal structure.
 type Journal struct {
@@ -259,6 +269,65 @@ func (j *Journal) GetDataValue(field string) (string, error) {
 		return "", err
 	}
 	return strings.SplitN(val, "=", 2)[1], nil
+}
+
+// GetJournalEntry returns all the exportable information that a journal
+// entry contains.
+func (j *Journal) GetEntry() (*JournalEntry, error) {	
+	var r C.int
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	entry := &JournalEntry{Fields:make(map[string]string)}
+
+	var cursor *C.char
+	r = C.sd_journal_get_cursor(j.cjournal, &cursor)
+	if r < 0 {
+		return nil, fmt.Errorf("failed to get cursor: %d", r)
+	}
+	entry.Cursor = C.GoString(cursor)
+
+	var realtimeUsec C.uint64_t
+	r = C.sd_journal_get_realtime_usec(j.cjournal, &realtimeUsec)
+	if r < 0 {
+		return nil, fmt.Errorf("failed to get realtime timestamp: %d", r)
+	}
+	entry.RealtimeTimestamp = uint64(realtimeUsec)
+
+	var monotonicUsec C.uint64_t
+	var bootid C.sd_id128_t // We don't do anything with this since we get it below
+	r = C.sd_journal_get_monotonic_usec(j.cjournal, &monotonicUsec, &bootid)
+	if r < 0 {
+		return nil, fmt.Errorf("failed to get monotinic timestamp: %d", r)
+	}
+	entry.MonotonicTimestamp = uint64(monotonicUsec)
+	
+	var d unsafe.Pointer
+	var l C.size_t
+
+	// Implements the JOURNAL_FOREACH_DATA_RETVAL macro from journal-internal.h
+	C.sd_journal_restart_data(j.cjournal)
+	for {
+		r = C.sd_journal_enumerate_data(j.cjournal, &d, &l)		
+		if r < 0 {
+			return nil, fmt.Errorf("failed to read message field: %d", r)
+		}
+
+		if r == 0 {
+			break
+		}
+		
+		msg := C.GoStringN((*C.char)(d), C.int(l))
+		kv := strings.SplitN(msg, "=", 2)
+		if len(kv) < 2 {
+			return nil, fmt.Errorf("invalid field")
+		}
+
+		entry.Fields[kv[0]] = kv[1]
+	}
+
+	return entry, nil
 }
 
 // SetDataThresold sets the data field size threshold for data returned by
